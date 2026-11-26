@@ -26,7 +26,12 @@ jobs:
           when: always
           command: |
             # Chain runs so the stream continues past the job time limit.
-            # Skip while the placeholder IDs are still in place.
+            # Skip while the placeholder IDs are still in place, or when
+            # RESTART_ENABLED=false (the kill switch for stopping the chain).
+            if [ "$RESTART_ENABLED" = "false" ]; then
+              echo "RESTART_ENABLED=false; not restarting"
+              exit 0
+            fi
             if [ "$YOUTUBE_STREAM_ID" = "REPLACE_ME" ] || [ "$YOUTUBE_BROADCAST_ID" = "REPLACE_ME" ]; then
               echo "Placeholder IDs; not restarting"
               exit 0
