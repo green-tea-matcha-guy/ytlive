@@ -5,9 +5,9 @@ Random stories are split into scenes by an LLM, each scene's keywords are sketch
 drawing model, and the result is streamed as video with a calm piano loop. Nothing is persisted.
 """
 
+import multiprocessing
 import os
 import queue
-import random
 import shutil
 import signal
 import subprocess
@@ -16,11 +16,9 @@ import threading
 import time
 
 import music
+import producer
 import youtube
-from llm import plan_scenes
 from render import FPS, HEIGHT, WIDTH, Player, SceneView, scene_seconds
-from sketch import Sketcher
-from stories import random_story
 
 BGM_PATH = "/tmp/bgm.wav"
 AUDIO_FILTER = "[1:a]aecho=0.7:0.6:70|150|260:0.3|0.22|0.14,lowpass=f=6500,volume=0.9[a]"
@@ -101,33 +99,6 @@ class Encoder:
         self.process = None
 
 
-def run_producer(stop, scenes, sketcher):
-    """Endlessly pick a story, plan its scenes, sketch each one and queue it, a few scenes ahead."""
-    rng = random.Random()
-    while not stop.is_set():
-        try:
-            story = random_story(rng)
-            plan = plan_scenes(story["story"])
-            print(f"story: {len(plan)} scenes, topic {story['topic']!r}", flush=True)
-            for index, scene in enumerate(plan):
-                strokes = [sketcher.draw(word, seed=rng.randrange(10**6)) for word in scene["keywords"]]
-                view = SceneView(
-                    scene["text"], scene["keywords"], strokes, index, len(plan),
-                    topic=story["topic"], duration=scene_seconds(scene["text"]),
-                )
-                while not stop.is_set():
-                    try:
-                        scenes.put(view, timeout=1)
-                        break
-                    except queue.Full:
-                        continue
-                if stop.is_set():
-                    return
-        except Exception as exc:
-            print(f"producer error: {exc}", file=sys.stderr, flush=True)
-            stop.wait(10)
-
-
 def main():
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -141,10 +112,11 @@ def main():
         output = youtube.ingest_url(stream)
 
     music.make_bgm(BGM_PATH)
-    sketcher = Sketcher()
     player = Player(time.monotonic())
-    scenes = queue.Queue(maxsize=3)
-    threading.Thread(target=run_producer, args=(stop, scenes, sketcher), daemon=True).start()
+    ctx = multiprocessing.get_context("spawn")
+    scenes, producer_stop = ctx.Queue(maxsize=3), ctx.Event()
+    worker = ctx.Process(target=producer.produce, args=(scenes, producer_stop), daemon=True)
+    worker.start()
 
     encoder = Encoder(output, bool(local_output), player)
     next_scene_at = 0.0
@@ -162,19 +134,29 @@ def main():
                 now = time.monotonic()
                 if now >= next_scene_at:
                     try:
-                        view = scenes.get_nowait()
+                        item = scenes.get_nowait()
                     except queue.Empty:
                         pass  # the next scene is still being drawn; keep the current page up
                     else:
+                        view = SceneView(
+                            item["text"], item["keywords"], item["strokes"], item["index"], item["total"],
+                            topic=item["topic"], duration=scene_seconds(item["text"]),
+                        )
                         player.show(view, now)
                         next_scene_at = now + view.duration + 0.6
+                if not worker.is_alive():
+                    raise RuntimeError("scene producer process exited")
             except Exception as exc:
                 print(f"Loop error: {exc}", file=sys.stderr, flush=True)
                 stop.wait(10)
             stop.wait(0.25)
     finally:
         stop.set()
+        producer_stop.set()
         encoder.close()
+        worker.join(timeout=5)
+        if worker.is_alive():
+            worker.terminate()
 
 
 if __name__ == "__main__":
