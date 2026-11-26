@@ -1,4 +1,4 @@
-"""Story, scene and sketch production, run in its own low-priority process.
+"""Story, scene and sketch production, run in its own process.
 
 Drawing inference is CPU-heavy; keeping it out of the streaming process stops it from starving the
 frame renderer and the encoder on a small machine.
@@ -17,10 +17,9 @@ import sys  # noqa: E402
 
 def produce(scenes, stop):
     """Endlessly pick a story, plan its scenes, sketch each one and put it on `scenes`."""
-    try:
-        os.nice(10)
-    except (OSError, AttributeError):
-        pass
+    import time
+
+    started = time.monotonic()
     import torch
 
     torch.set_num_threads(1)
@@ -29,14 +28,19 @@ def produce(scenes, stop):
     from stories import random_story
 
     sketcher = Sketcher()
+    print(f"producer: models ready after {time.monotonic() - started:.0f}s", flush=True)
     rng = random.Random()
     while not stop.is_set():
         try:
+            t0 = time.monotonic()
             story = random_story(rng)
             plan = plan_scenes(story["story"])
-            print(f"story: {len(plan)} scenes, topic {story['topic']!r}", flush=True)
+            print(f"story: {len(plan)} scenes, topic {story['topic']!r} (planned in {time.monotonic() - t0:.0f}s)", flush=True)
             for index, scene in enumerate(plan):
+                t0 = time.monotonic()
                 strokes = [sketcher.draw(word, seed=rng.randrange(10**6)) for word in scene["keywords"]]
+                if index == 0:
+                    print(f"producer: first scene drawn in {time.monotonic() - t0:.0f}s", flush=True)
                 item = {
                     "text": scene["text"], "keywords": scene["keywords"], "strokes": strokes,
                     "index": index, "total": len(plan), "topic": story["topic"],

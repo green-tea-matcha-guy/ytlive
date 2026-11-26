@@ -27,14 +27,16 @@ AUDIO_FILTER = "[1:a]aecho=0.7:0.6:70|150|260:0.3|0.22|0.14,lowpass=f=3200,volum
 def ffmpeg_command(output, local=False):
     command = [
         shutil.which("ffmpeg") or "ffmpeg",
-        "-hide_banner", "-loglevel", "info", "-stats_period", "30",
+        # warning level keeps the output URL (it contains the stream key) out of the logs; -stats still prints progress
+        "-hide_banner", "-loglevel", "warning", "-stats", "-stats_period", "30",
         "-use_wallclock_as_timestamps", "1",
         "-thread_queue_size", "64", "-f", "rawvideo", "-pixel_format", "rgb24",
         "-video_size", f"{WIDTH}x{HEIGHT}", "-framerate", str(FPS), "-i", "pipe:0",
         "-re", "-stream_loop", "-1", "-i", BGM_PATH,
         "-filter_complex", AUDIO_FILTER,
         "-map", "0:v", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "superfast", "-profile:v", "high", "-level:v", "4.0",
+        "-c:v", "libx264", "-preset", "superfast", "-threads", "1",  # one core for x264, one for the drawing process
+         "-profile:v", "high", "-level:v", "4.0",
         "-pix_fmt", "yuv420p", "-r", str(FPS),
         "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3600k",
         "-g", str(2 * FPS), "-keyint_min", str(2 * FPS), "-sc_threshold", "0",
