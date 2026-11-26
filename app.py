@@ -36,10 +36,7 @@ def ffmpeg_command(output, local=False):
         "-map", "0:v", "-map", "[a]",
         "-c:v", "libx264", "-preset", "superfast", "-profile:v", "high", "-level:v", "4.0",
         "-pix_fmt", "yuv420p", "-r", str(FPS),
-        "-b:v", "1500k", "-minrate", "1500k", "-maxrate", "1500k", "-bufsize", "3000k",
-        # constant bitrate with filler: a still page would otherwise send almost nothing and YouTube
-        # reports the ingest as starved
-        "-x264-params", "nal-hrd=cbr:force-cfr=1",
+        "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3600k",
         "-g", str(2 * FPS), "-keyint_min", str(2 * FPS), "-sc_threshold", "0",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
     ]

@@ -58,6 +58,24 @@ def paper_texture():
 
 PAPER_IMAGE = paper_texture()
 
+# Faint film grain that changes every frame. A still page otherwise encodes to almost nothing, and YouTube
+# flags a stream with so little real video data as starved (filler padding does not count).
+GRAIN_VARIANTS = 8
+GRAIN_PAD = 64
+_grain_rng = np.random.default_rng(11)
+GRAINS = [
+    _grain_rng.integers(-3, 4, (HEIGHT + GRAIN_PAD, WIDTH + GRAIN_PAD, 1), dtype=np.int8)
+    for _ in range(GRAIN_VARIANTS)
+]
+
+
+def with_grain(image):
+    """Raw RGB bytes of the image with a different slice of grain added each call."""
+    y, x = _grain_rng.integers(0, GRAIN_PAD, 2)
+    noise = GRAINS[int(_grain_rng.integers(0, GRAIN_VARIANTS))][y:y + HEIGHT, x:x + WIDTH]
+    frame = np.asarray(image, dtype=np.int16) + noise
+    return np.clip(frame, 0, 255).astype(np.uint8).tobytes()
+
 
 def wrap(draw, text, font, max_width):
     lines, current = [], ""
@@ -241,7 +259,7 @@ class Player:
             image = self.current.frame(now - self.started)
         if alpha < 1.0:
             image = Image.blend(PAPER_IMAGE, image, max(alpha, 0.0))
-        return image.tobytes()
+        return with_grain(image)
 
 
 def scene_seconds(text):

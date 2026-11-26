@@ -3,6 +3,7 @@
 
 Needs YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET and YOUTUBE_REFRESH_TOKEN in the environment.
 Prints the YOUTUBE_STREAM_ID and YOUTUBE_BROADCAST_ID to configure in CircleCI.
+BROADCAST_PRIVACY (unlisted by default) can be set to public or private.
 """
 
 import datetime
@@ -37,7 +38,7 @@ def create_stream():
 
 def create_broadcast():
     start = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
-    status = {"privacyStatus": "unlisted", "selfDeclaredMadeForKids": False}
+    status = {"privacyStatus": os.environ.get("BROADCAST_PRIVACY", "unlisted"), "selfDeclaredMadeForKids": False}
     return youtube_api(
         "POST",
         "/liveBroadcasts",
