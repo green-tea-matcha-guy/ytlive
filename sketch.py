@@ -40,9 +40,13 @@ class LeanWords:
 
         z = np.load(path)
         meta = json.loads(str(z["meta"]))
-        fills = {n: getattr(torch.Tensor, n) for n in ("normal_", "uniform_")}  # skip random init, we overwrite
+        # Every weight is overwritten below, so skip random initialisation, which is very slow for 536M
+        # parameters on one thread. Newer transformers has its own init functions, so patch the model's
+        # _init_weights as well as torch's in-place fills.
+        fills = {n: getattr(torch.Tensor, n) for n in ("normal_", "uniform_")}
         previous = torch.get_default_dtype()
         torch.set_default_dtype(torch.bfloat16)
+        SiglipTextModel._init_weights = lambda self, module: None
         try:
             for n in fills:
                 setattr(torch.Tensor, n, lambda t, *a, **k: t)
@@ -51,6 +55,7 @@ class LeanWords:
             torch.set_default_dtype(previous)
             for n, f in fills.items():
                 setattr(torch.Tensor, n, f)
+            del SiglipTextModel._init_weights
         files = set(z.files)
         with torch.no_grad():
             for name, param in self.model.state_dict().items():
