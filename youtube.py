@@ -128,7 +128,7 @@ def check_resumable():
 
 
 def go_live(stop):
-    """Wait for YouTube to accept ingest, then walk the broadcast ready -> testing -> live."""
+    """Wait for YouTube to accept ingest, then move the broadcast to live."""
     deadline = time.time() + 75
     while not stop.is_set():
         if time.time() > deadline:
@@ -146,9 +146,17 @@ def go_live(stop):
             raise RuntimeError("YouTube completed the broadcast.")
         if time.time() > deadline:
             raise RuntimeError("YouTube did not finish the live transition within 90 seconds.")
-        # each step can only be requested once
-        target = {"ready": "testing", "testing": "live"}.get(lifecycle)
-        if target and target not in requested:
-            transition(target)
+        # Without a monitor stream a ready broadcast goes straight to live; with one it must pass through
+        # testing. Try the direct step first and fall back when YouTube says it is not allowed.
+        for target in {"ready": ("live", "testing"), "testing": ("live",)}.get(lifecycle, ()):
+            if target in requested:
+                continue
+            try:
+                transition(target)
+            except RuntimeError as exc:
+                if "invalidTransition" not in str(exc):
+                    raise
+                continue
             requested.add(target)
+            break
         stop.wait(2)

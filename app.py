@@ -31,15 +31,15 @@ def ffmpeg_command(output, local=False):
         shutil.which("ffmpeg") or "ffmpeg",
         "-hide_banner", "-loglevel", "warning",
         "-use_wallclock_as_timestamps", "1",
-        "-f", "rawvideo", "-pixel_format", "rgb24",
+        "-thread_queue_size", "64", "-f", "rawvideo", "-pixel_format", "rgb24",
         "-video_size", f"{WIDTH}x{HEIGHT}", "-framerate", str(FPS), "-i", "pipe:0",
         "-re", "-stream_loop", "-1", "-i", BGM_PATH,
         "-filter_complex", AUDIO_FILTER,
         "-map", "0:v", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-level:v", "4.0",
-        "-pix_fmt", "yuv420p", "-r", "30",
+        "-c:v", "libx264", "-preset", "superfast", "-profile:v", "high", "-level:v", "4.0",
+        "-pix_fmt", "yuv420p", "-r", str(FPS),
         "-b:v", "1800k", "-maxrate", "2400k", "-bufsize", "3600k",
-        "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
+        "-g", str(2 * FPS), "-keyint_min", str(2 * FPS), "-sc_threshold", "0",
         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
     ]
     if local:
@@ -148,14 +148,17 @@ def main():
 
     encoder = Encoder(output, bool(local_output), player)
     next_scene_at = 0.0
+    live = bool(local_output)
     print("Streaming started", flush=True)
     try:
         while not stop.is_set() and time.monotonic() < deadline:
             try:
                 if not encoder.alive():
                     encoder.start()
-                    if not local_output:
-                        youtube.go_live(stop)
+                    live = bool(local_output)
+                if not live:  # retried on the next pass if YouTube is not ready yet
+                    youtube.go_live(stop)
+                    live = True
                 now = time.monotonic()
                 if now >= next_scene_at:
                     try:
