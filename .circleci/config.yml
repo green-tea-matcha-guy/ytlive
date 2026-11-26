@@ -17,8 +17,27 @@ jobs:
           command: pip install --no-cache-dir -r requirements.txt
       - run:
           name: Stream
-          command: python app.py
+          command: |
+            date +%s > /tmp/stream_start
+            python app.py
           no_output_timeout: 30m
+      - run:
+          name: Start the next run
+          when: always
+          command: |
+            # Chain runs so the stream continues past the job time limit.
+            # Skip while the placeholder IDs are still in place.
+            if [ "$YOUTUBE_STREAM_ID" = "REPLACE_ME" ] || [ "$YOUTUBE_BROADCAST_ID" = "REPLACE_ME" ]; then
+              echo "Placeholder IDs; not restarting"
+              exit 0
+            fi
+            # Back off if the run ended early (e.g. a crash) so failures cannot spin.
+            if [ $(( $(date +%s) - $(cat /tmp/stream_start 2>/dev/null || echo 0) )) -lt 900 ]; then sleep 300; fi
+            curl -sf -X POST \
+              -H "Circle-Token: $CIRCLE_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://circleci.com/api/v2/project/$RESTART_PROJECT_SLUG/pipeline/run" \
+              -d "{\"definition_id\":\"$RESTART_DEFINITION_ID\",\"config\":{\"branch\":\"main\"},\"checkout\":{\"branch\":\"main\"}}"
 
 workflows:
   stream:
