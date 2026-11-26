@@ -24,7 +24,7 @@ Nothing is persisted: stories are random and there is no state between runs.
 
 ## Running continuously
 
-CircleCI jobs have a time limit, so the process exits cleanly after `MAX_RUNTIME_SECONDS` (default 4 hours)
+CircleCI jobs have a time limit, so the process exits cleanly after `MAX_RUNTIME_SECONDS` (default 55 minutes, under the 1-hour job limit of the plan)
 without completing the broadcast, and the last step of each run starts the next one through the CircleCI
 API (scheduled pipelines are not available for standalone projects). `serial-group` keeps a single
 connection to the stream key open at a time.

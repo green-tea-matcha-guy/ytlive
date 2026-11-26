@@ -118,7 +118,7 @@ def main():
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
-    deadline = time.monotonic() + int(os.environ.get("MAX_RUNTIME_SECONDS", "14400"))
+    deadline = time.monotonic() + int(os.environ.get("MAX_RUNTIME_SECONDS", "3300"))
     local_output = os.environ.get("LOCAL_OUTPUT")  # write a file instead of streaming (for testing)
 
     # start the producer first: it spends several seconds loading models while we do the rest of the setup
