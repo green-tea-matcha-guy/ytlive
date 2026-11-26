@@ -1,3 +1,5 @@
+# torch (the CPU build) is installed separately in CI: pip install torch --index-url https://download.pytorch.org/whl/cpu
 numpy
 Pillow==11.3.0
 transformers
+pytest

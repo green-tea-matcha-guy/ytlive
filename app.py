@@ -21,13 +21,13 @@ import youtube
 from render import FPS, HEIGHT, WIDTH, Player, SceneView, scene_seconds
 
 BGM_PATH = "/tmp/bgm.wav"
-AUDIO_FILTER = "[1:a]aecho=0.7:0.6:70|150|260:0.3|0.22|0.14,lowpass=f=6500,volume=0.9[a]"
+AUDIO_FILTER = "[1:a]aecho=0.7:0.6:70|150|260:0.3|0.22|0.14,lowpass=f=3200,volume=0.95[a]"
 
 
 def ffmpeg_command(output, local=False):
     command = [
         shutil.which("ffmpeg") or "ffmpeg",
-        "-hide_banner", "-loglevel", "warning",
+        "-hide_banner", "-loglevel", "info", "-stats_period", "30",
         "-use_wallclock_as_timestamps", "1",
         "-thread_queue_size", "64", "-f", "rawvideo", "-pixel_format", "rgb24",
         "-video_size", f"{WIDTH}x{HEIGHT}", "-framerate", str(FPS), "-i", "pipe:0",
@@ -50,10 +50,23 @@ def ffmpeg_command(output, local=False):
 
 def feed_video(process, player, stop):
     deadline = time.monotonic()
+    report_at, frames, worst_render, worst_write = deadline + 30, 0, 0.0, 0.0
     try:
         while not stop.is_set() and process.poll() is None:
-            process.stdin.write(player.render(time.monotonic()))
+            t0 = time.monotonic()
+            frame = player.render(t0)
+            t1 = time.monotonic()
+            process.stdin.write(frame)
             process.stdin.flush()
+            t2 = time.monotonic()
+            frames += 1
+            worst_render, worst_write = max(worst_render, t1 - t0), max(worst_write, t2 - t1)
+            if t2 >= report_at:  # periodic health line: is the feeder keeping up with the encoder?
+                print(
+                    f"feeder: {frames / 30:.1f} fps, worst render {worst_render * 1000:.0f} ms, "
+                    f"worst write {worst_write * 1000:.0f} ms", flush=True,
+                )
+                report_at, frames, worst_render, worst_write = t2 + 30, 0, 0.0, 0.0
             deadline += 1 / FPS
             delay = deadline - time.monotonic()
             if delay < -1:  # fell far behind; resynchronise instead of racing to catch up
@@ -109,17 +122,18 @@ def main():
     deadline = time.monotonic() + int(os.environ.get("MAX_RUNTIME_SECONDS", "14400"))
     local_output = os.environ.get("LOCAL_OUTPUT")  # write a file instead of streaming (for testing)
 
-    output = local_output
-    if not local_output:
-        stream = youtube.check_resumable()
-        output = youtube.ingest_url(stream)
-
-    music.make_bgm(BGM_PATH)
-    player = Player(time.monotonic())
+    # start the producer first: it spends several seconds loading models while we do the rest of the setup
     ctx = multiprocessing.get_context("spawn")
     scenes, producer_stop = ctx.Queue(maxsize=3), ctx.Event()
     worker = ctx.Process(target=producer.produce, args=(scenes, producer_stop), daemon=True)
     worker.start()
+
+    output = local_output
+    if not local_output:
+        stream = youtube.check_resumable()
+        output = youtube.ingest_url(stream)
+    music.make_bgm(BGM_PATH)
+    player = Player(time.monotonic())
 
     encoder = Encoder(output, bool(local_output), player)
     next_scene_at = 0.0

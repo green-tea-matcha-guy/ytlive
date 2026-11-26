@@ -10,35 +10,30 @@ jobs:
       PENGPT_MODEL_DIR: /home/circleci/models
     steps:
       - checkout
+      # everything slow to set up lives in one cache: ffmpeg, the Python environment and the model weights
       - restore_cache:
           keys:
-            - models-v1
+            - deps-v1-{{ checksum "requirements.txt" }}-{{ checksum "scripts/setup_ffmpeg.sh" }}
       - run:
-          name: Install ffmpeg and fonts
+          name: Set up ffmpeg, Python environment and models
           command: |
-            # mirrors occasionally 404 on freshly superseded packages; refresh the index and retry
-            for attempt in 1 2 3 4; do
-              sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core && exit 0
-              sleep 5
-            done
-            exit 1
-      - run:
-          name: Install Python dependencies
-          command: |
-            pip install torch --index-url https://download.pytorch.org/whl/cpu
-            pip install -r requirements.txt
-      - run:
-          name: Fetch PenGPT models
-          command: python -c "import sketch; print(sketch.ensure_models())"
+            scripts/setup_ffmpeg.sh
+            [ -d ~/venv ] || python -m venv ~/venv
+            if ! ~/venv/bin/python -c "import torch, transformers, PIL, pytest" 2>/dev/null; then
+              ~/venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+              ~/venv/bin/pip install -r requirements.txt
+            fi
+            ~/venv/bin/python -c "import sketch; print(sketch.ensure_models())"
+            echo 'export PATH=$HOME/ffmpeg/bin:$HOME/venv/bin:$PATH' >> "$BASH_ENV"
       - save_cache:
-          key: models-v1
+          key: deps-v1-{{ checksum "requirements.txt" }}-{{ checksum "scripts/setup_ffmpeg.sh" }}
           paths:
+            - /home/circleci/ffmpeg
+            - /home/circleci/venv
             - /home/circleci/models
       - run:
           name: Test
-          command: |
-            pip install pytest
-            python -m pytest -q tests
+          command: python -m pytest -q tests
       - run:
           name: Stream
           command: |

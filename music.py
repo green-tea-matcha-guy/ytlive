@@ -8,18 +8,18 @@ SR = 44100
 BPM = 60
 STEP = 60 / BPM / 2  # an eighth note
 STEPS_PER_CHORD = 16
-# (bass root, chord tones) as MIDI notes; diatonic to C major, slow and open
+# (bass root, chord tones) as MIDI notes; diatonic to C major, slow and low (the chords sit below middle C)
 CHORDS = (
-    (36, (60, 64, 67, 71)),  # Cmaj7
-    (33, (57, 60, 64, 67)),  # Am7
-    (41, (60, 64, 65, 69)),  # Fmaj7
-    (31, (59, 62, 64, 67)),  # G6
-    (40, (59, 62, 64, 67)),  # Em7
-    (33, (57, 60, 64, 67)),  # Am7
-    (38, (57, 60, 62, 65)),  # Dm7
-    (31, (59, 62, 67, 71)),  # G
+    (36, (48, 52, 55, 59)),  # Cmaj7
+    (33, (45, 48, 52, 55)),  # Am7
+    (41, (48, 52, 53, 57)),  # Fmaj7
+    (31, (47, 50, 52, 55)),  # G6
+    (40, (47, 50, 52, 55)),  # Em7
+    (33, (45, 48, 52, 55)),  # Am7
+    (38, (45, 48, 50, 53)),  # Dm7
+    (31, (47, 50, 55, 59)),  # G
 )
-PENTATONIC = (72, 74, 76, 79, 81, 84)  # C D E G A C
+PENTATONIC = (60, 62, 64, 67, 69, 72)  # C D E G A C, around middle C
 ARPEGGIO = (0, 2, 1, 3, 2, 1, 3, 2)
 
 
@@ -32,12 +32,12 @@ def piano_note(freq, seconds, velocity, rng):
     t = np.arange(n) / SR
     out = np.zeros(n)
     tau = np.clip(4.2 - 0.0021 * freq, 0.9, 4.0)
-    for k in range(1, 11):
+    for k in range(1, 8):  # few, quickly fading upper partials: a soft, dark tone
         f = k * freq * np.sqrt(1 + 0.0004 * k * k)
-        if f > 9000:
+        if f > 5000:
             break
-        decay = np.exp(-t / (tau / k ** 0.55))
-        out += (1 / k ** 1.15) * np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28)) * decay
+        decay = np.exp(-t / (tau / k ** 0.7))
+        out += (1 / k ** 1.6) * np.sin(2 * np.pi * f * t + rng.uniform(0, 6.28)) * decay
     attack = np.minimum(t / 0.006, 1.0)
     release = np.minimum((seconds - t) / 0.4, 1.0)
     hammer = rng.normal(0, 1, n) * np.exp(-t / 0.012) * 0.05
@@ -65,9 +65,9 @@ def make_bgm(path, seed=3):
         for i in range(STEPS_PER_CHORD):
             if rng.random() < 0.12:  # an occasional rest
                 continue
-            note = tones[ARPEGGIO[i % len(ARPEGGIO)]] + (12 if i % 8 == 7 else 0)
-            seg = piano_note(midi_hz(note), 3.2, rng.uniform(0.28, 0.42), rng)
-            add_wrapped(buffer, seg, int((base + i) * STEP * SR + rng.integers(0, 600)), 0.1 + 0.2 * (note - 60) / 24)
+            note = tones[ARPEGGIO[i % len(ARPEGGIO)]]
+            seg = piano_note(midi_hz(note), 3.2, rng.uniform(0.3, 0.45), rng)
+            add_wrapped(buffer, seg, int((base + i) * STEP * SR + rng.integers(0, 600)), 0.1 + 0.2 * (note - 48) / 24)
         for step in (0, 8):  # a slow melody note, sometimes
             if rng.random() < 0.7:
                 note = int(rng.choice(PENTATONIC))

@@ -10,6 +10,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "pen
 from pen import Pen, strokes as split_strokes  # noqa: E402
 
 MODEL_DIR = os.environ.get("PENGPT_MODEL_DIR", os.path.expanduser("~/models"))
+# the demo's sliders: loose<->literal is guidance 1..4 (halfway = 2.5); sparse<->dense is ink, where the sparse
+# end (0) means "let the model choose", i.e. no ink request
+GUIDANCE = 2.5
 SKETCH_MODEL = "sketch.npz"
 TEXT_MODEL = "siglip-text.npz"
 
@@ -93,7 +96,7 @@ class Sketcher:
         best = None
         for attempt in range(3):
             rng = np.random.default_rng(seed * 7 + attempt)
-            points = self.pen.draw(prompt, temperature=0.6, rng=rng)
+            points = self.pen.draw(prompt, temperature=0.6, rng=rng, guidance=GUIDANCE)
             if best is None or len(points) > len(best):
                 best = points
             if len(points) >= 40:
