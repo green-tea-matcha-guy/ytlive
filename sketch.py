@@ -150,6 +150,10 @@ class Sketcher:
                 return drawings[random.Random(seed).randrange(len(drawings))]
         return None
 
+    def available(self, keyword, seed=0):
+        """Whether draw() would return at once: the word is in the library or the models are already loaded."""
+        return self.pen is not None or self.from_library(keyword, seed) is not None
+
     def draw(self, keyword, seed=0):
         """A list of strokes, each an (n, 2) array scaled so the drawing fits a unit box, y pointing down."""
         cached = self.from_library(keyword, seed)

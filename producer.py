@@ -35,11 +35,18 @@ def produce(scenes, stop):
             print(f"story: {len(plan)} scenes, topic {story['topic']!r} (planned in {time.monotonic() - t0:.0f}s)", flush=True)
             for index, scene in enumerate(plan):
                 t0 = time.monotonic()
-                strokes = [sketcher.draw(word, seed=rng.randrange(10**6)) for word in scene["keywords"]]
-                if index == 0:
-                    print(f"producer: first scene drawn in {time.monotonic() - t0:.0f}s", flush=True)
+                seeds = [rng.randrange(10**6) for _ in scene["keywords"]]
+                # while the drawing models are still loading, leave out keywords that would need them, so the
+                # first scenes go out at once; if nothing is left, wait for the models
+                usable = [(w, s) for w, s in zip(scene["keywords"], seeds) if sketcher.available(w, s)]
+                keywords, strokes = [], []
+                for word, seed in usable or list(zip(scene["keywords"], seeds)):
+                    keywords.append(word)
+                    strokes.append(sketcher.draw(word, seed=seed))
+                live = sum(1 for w, s in zip(keywords, seeds) if sketcher.from_library(w, s) is None)
+                print(f"producer: scene {index + 1}/{len(plan)} drawn in {time.monotonic() - t0:.0f}s ({live} live)", flush=True)
                 item = {
-                    "text": scene["text"], "keywords": scene["keywords"], "strokes": strokes,
+                    "text": scene["text"], "keywords": keywords, "strokes": strokes,
                     "index": index, "total": len(plan), "topic": story["topic"],
                 }
                 while not stop.is_set():
