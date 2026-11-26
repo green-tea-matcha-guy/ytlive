@@ -161,7 +161,7 @@ def main():
                         player.show(view, now)
                         next_scene_at = now + view.duration + 0.6
                 if not worker.is_alive():
-                    raise RuntimeError("scene producer process exited")
+                    raise RuntimeError(f"scene producer process exited with code {worker.exitcode}")
             except Exception as exc:
                 print(f"Loop error: {exc}", file=sys.stderr, flush=True)
                 stop.wait(10)

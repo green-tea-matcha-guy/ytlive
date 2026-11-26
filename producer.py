@@ -17,17 +17,22 @@ import sys  # noqa: E402
 
 def produce(scenes, stop):
     """Endlessly pick a story, plan its scenes, sketch each one and put it on `scenes`."""
+    import faulthandler
     import time
 
     started = time.monotonic()
+    print("producer: started", flush=True)
+    faulthandler.dump_traceback_later(60, repeat=True, file=sys.stderr)  # shows where it is stuck, if it is
     import torch
 
     torch.set_num_threads(1)
+    print(f"producer: torch imported after {time.monotonic() - started:.0f}s", flush=True)
     from llm import plan_scenes
     from sketch import Sketcher
     from stories import random_story
 
     sketcher = Sketcher()
+    faulthandler.cancel_dump_traceback_later()
     print(f"producer: models ready after {time.monotonic() - started:.0f}s", flush=True)
     rng = random.Random()
     while not stop.is_set():
