@@ -530,8 +530,8 @@ def go_live(stop):
         if get_stream().get("status", {}).get("streamStatus") == "active":
             break
         stop.wait(3)
-    deadline = time.time() + 60
-    transitioned = False
+    deadline = time.time() + 90
+    requested = set()
     while not stop.is_set():
         lifecycle = get_broadcast().get("status", {}).get("lifeCycleStatus")
         if lifecycle == "live":
@@ -540,11 +540,13 @@ def go_live(stop):
             raise RuntimeError("YouTube completed the broadcast.")
         if time.time() > deadline:
             raise RuntimeError(
-                "YouTube did not finish the live transition within 60 seconds."
+                "YouTube did not finish the live transition within 90 seconds."
             )
-        if not transitioned and lifecycle in ("ready", "testing"):
-            transition("live")
-            transitioned = True
+        # ready -> testing -> live; each step can only be requested once
+        target = {"ready": "testing", "testing": "live"}.get(lifecycle)
+        if target and target not in requested:
+            transition(target)
+            requested.add(target)
         stop.wait(2)
 
 
