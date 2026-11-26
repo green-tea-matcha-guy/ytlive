@@ -1,0 +1,28 @@
+version: 2.1
+
+jobs:
+  stream:
+    docker:
+      - image: cimg/python:3.12
+    resource_class: small
+    steps:
+      - checkout
+      - run:
+          name: Install ffmpeg and fonts
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - run:
+          name: Install Python dependencies
+          command: pip install --no-cache-dir -r requirements.txt
+      - run:
+          name: Stream
+          command: python app.py
+          no_output_timeout: 30m
+
+workflows:
+  stream:
+    jobs:
+      - stream:
+          # one encoder at a time: a new run waits for the previous one to end
+          serial-group: << pipeline.project.slug >>/stream

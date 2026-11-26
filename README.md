@@ -1,40 +1,42 @@
-# Resumable YouTube Live chat AI on Render
+# YouTube Live chat AI on CircleCI
 
-A cron-triggered Render web service that reconnects to one reusable YouTube
-ingest stream, atomically claims one unanswered live-chat message per run
-through Firebase Realtime Database, answers it through the Exa demo endpoint,
-and renders the question and answer into a generated 720p video feed.
+A long-running CircleCI job that streams a generated 720p video feed to one
+reusable YouTube ingest stream, reads the broadcast's live chat, answers each
+new message through the Exa demo endpoint, and shows the question and answer on
+screen.
 
-Each authenticated `POST /tick` claims at most one message, generates its
-answer, reconnects long enough to show that response card, and stops ingest
-without completing the YouTube broadcast. With no unanswered message it
-re-streams the latest card as a keepalive. Buffering between cron calls is
-expected.
+The job holds one ffmpeg connection open for its whole run. Chat is polled in
+a loop, messages are answered one at a time, and each answer stays on screen
+until the next one replaces it. There is no database or other persisted state:
+the chat page token, the pending queue and the on-screen card live in memory.
+Messages already in chat when a run starts are skipped.
 
-If a tick arrives while an older run is still working, the newer invocation
-signals the old run to stop and takes the single encoder lock as soon as the old
-RTMP connection closes. This gives the newest cron invocation precedence
-without opening two simultaneous connections to the same YouTube stream key.
+## Running continuously
 
-## State and concurrency
+CircleCI jobs have a maximum duration, so the process exits cleanly after
+`MAX_RUNTIME_SECONDS` (default 4 hours) without completing the YouTube
+broadcast. A scheduled pipeline trigger every 4 hours starts the next run, and
+`serial-group` makes it wait until the previous run has finished, so only one
+connection to the stream key is open at a time. Messages sent in the gap
+between runs are not answered.
 
-YouTube resource IDs and OAuth credentials are Render environment variables.
-Firebase stores the last answered message ID and publication timestamp, the
-single latest question/answer card, and a temporary processing lease while a
-response is in flight. Older chat content is not retained. Transactional claims
-prevent overlapping workers from answering the same message; abandoned leases
-can be reclaimed after five minutes.
+## Environment variables
 
-## Endpoints
+Set these as project environment variables in CircleCI.
 
-- `GET /health` — process status, with no secrets
-- `POST /tick` — starts a job when authorized with
-  `Authorization: Bearer $CRON_SHARED_SECRET`
-- `POST /tick?delay=30` — schedules the same job 30 seconds later, used with a
-  second whole-minute cron schedule to produce a 90-second cadence
+Required:
 
-## Environment
+- `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN` — OAuth
+  credentials with access to the YouTube Data API
+- `YOUTUBE_BROADCAST_ID` — a non-completed broadcast
+- `YOUTUBE_STREAM_ID` — the reusable stream bound to that broadcast
 
-See `render.yaml`. `YOUTUBE_STREAM_ID` must identify a reusable stream and
-`YOUTUBE_BROADCAST_ID` must identify a non-completed broadcast bound to it.
-`FIREBASE_SERVICE_ACCOUNT` is the service-account JSON string.
+Optional:
+
+- `CARD_SECONDS` — minimum seconds each answer stays up (8–20, default 10)
+- `CHAT_POLL_SECONDS` — minimum seconds between chat polls (default 30)
+- `MAX_RUNTIME_SECONDS` — seconds before the run exits (default 14400)
+- `EXA_ENDPOINT`, `EXA_MODEL` — answer backend and model
+
+Each chat poll costs YouTube API quota, so lowering `CHAT_POLL_SECONDS` can
+exhaust the daily quota.

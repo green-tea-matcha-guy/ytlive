@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Cron-triggered, resumable YouTube Live chat-to-AI video service."""
+"""Continuous YouTube Live chat-to-AI video stream."""
 
-import datetime as dt
 import json
 import math
 import os
@@ -14,12 +13,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections import deque
 from pathlib import Path
 
-import firebase_admin
-from firebase_admin import credentials, db
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -42,19 +38,6 @@ BOLD_FONT = next(
     )
     if Path(path).exists()
 )
-
-job_lock = threading.Lock()
-request_lock = threading.Lock()
-status_lock = threading.Lock()
-current_stop = None
-firebase_lock = threading.Lock()
-runtime_status = {
-    "running": False,
-    "startedAt": None,
-    "lastFinishedAt": None,
-    "lastError": None,
-    "processedThisRun": 0,
-}
 
 
 def required(name):
@@ -183,82 +166,34 @@ class ScreenState:
             )
 
 
-def firebase_root():
-    with firebase_lock:
-        if not firebase_admin._apps:
-            service_account = json.loads(required("FIREBASE_SERVICE_ACCOUNT"))
-            firebase_admin.initialize_app(
-                credentials.Certificate(service_account),
-                {
-                    "databaseURL": (
-                        f"https://{service_account['project_id']}.firebaseio.com"
-                    )
-                },
+class ScreenState:
+    def __init__(self):
+        self.author = ""
+        self.question = "Send a message in live chat"
+        self.answer = "Each new message is answered in its own short stream segment."
+        self.status = "CONNECTING"
+        self.version = 0
+        self.lock = threading.Lock()
+
+    def set(self, **values):
+        with self.lock:
+            changed = False
+            for name, value in values.items():
+                if getattr(self, name) != value:
+                    setattr(self, name, value)
+                    changed = True
+            if changed:
+                self.version += 1
+
+    def get(self):
+        with self.lock:
+            return (
+                self.author,
+                self.question,
+                self.answer,
+                self.status,
+                self.version,
             )
-    return db.reference(
-        f"youtubeLiveChatAI/{required('YOUTUBE_BROADCAST_ID')}"
-    )
-
-
-def state_ref():
-    return firebase_root().child("state")
-
-
-def claim_message(candidate):
-    claim_token = uuid.uuid4().hex
-    now = time.time()
-
-    def transaction(current):
-        current = current or {}
-        processing = current.get("processing")
-        if (
-            processing
-            and now - float(processing.get("claimedAt", 0)) <= 300
-        ):
-            return current
-        cursor = (
-            current.get("lastRespondedPublishedAt", ""),
-            current.get("lastRespondedMessageId", ""),
-        )
-        position = (candidate["published_at"], candidate["message_id"])
-        if position <= cursor:
-            return current
-        current["processing"] = {
-                "messageId": candidate["message_id"],
-                "publishedAt": candidate["published_at"],
-                "claimToken": claim_token,
-                "claimedAt": now,
-        }
-        return current
-
-    result = state_ref().transaction(transaction)
-    if result.get("processing", {}).get("claimToken") == claim_token:
-        candidate["claim_token"] = claim_token
-        return candidate
-    return None
-
-
-def finish_claim(candidate, answered, card=None):
-    claim_token = candidate["claim_token"]
-
-    def transaction(current):
-        if (
-            not current
-            or current.get("processing", {}).get("claimToken") != claim_token
-        ):
-            return current
-        current.pop("processing", None)
-        if answered:
-            current["lastRespondedMessageId"] = candidate["message_id"]
-            current["lastRespondedPublishedAt"] = candidate["published_at"]
-            current["latestCard"] = {
-                "author": card["author"],
-                "question": card["question"],
-                "answer": card["answer"],
-            }
-        return current
-
-    state_ref().transaction(transaction)
 
 
 def visible_answer(text):
@@ -291,7 +226,7 @@ def exa_answer(question, on_text):
         headers={
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
-            "User-Agent": "render-youtube-chat-ai/1.0",
+            "User-Agent": "youtube-chat-ai/1.0",
         },
     )
     with urllib.request.urlopen(request, timeout=90) as response:
@@ -522,265 +457,158 @@ def chat_messages(chat_id, page_token=None):
     return youtube_api("GET", "/liveChat/messages", params)
 
 
-def claim_one_message(chat_id):
-    response = chat_messages(chat_id)
-    state = state_ref().get() or {}
-    cursor = (
-        state.get("lastRespondedPublishedAt", ""),
-        state.get("lastRespondedMessageId", ""),
-    )
-    candidates = []
+class Encoder:
+    """One long-lived ffmpeg process fed with rendered frames."""
+
+    def __init__(self, stream, screen):
+        self.stream = stream
+        self.screen = screen
+        self.process = None
+        self.stop = threading.Event()
+        self.feeder = None
+
+    def alive(self):
+        return self.process is not None and self.process.poll() is None
+
+    def start(self):
+        self.close()
+        self.stop = threading.Event()
+        self.process = subprocess.Popen(
+            ffmpeg_command(self.stream), stdin=subprocess.PIPE
+        )
+        self.feeder = threading.Thread(
+            target=feed_video,
+            args=(self.process, self.screen, self.stop),
+            daemon=True,
+        )
+        self.feeder.start()
+
+    def close(self):
+        self.stop.set()
+        if self.feeder:
+            self.feeder.join(timeout=3)
+        if self.process and self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)
+            try:
+                self.process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                self.process.terminate()
+        self.process = None
+
+
+def new_messages(response):
+    messages = []
     for item in response.get("items", []):
-        message_id = item.get("id")
         snippet = item.get("snippet", {})
-        if (
-            not message_id
-            or snippet.get("type") != "textMessageEvent"
-        ):
-            continue
-        published_at = snippet.get("publishedAt", "")
         text = snippet.get("displayMessage", "").strip()
-        if not published_at or not text:
+        if snippet.get("type") != "textMessageEvent" or not text:
             continue
-        if (published_at, message_id) <= cursor:
-            continue
-        author = item.get("authorDetails", {}).get("displayName", "viewer")
-        candidates.append(
+        messages.append(
             {
-                "published_at": published_at,
-                "message_id": message_id,
-                "author": author,
+                "author": item.get("authorDetails", {}).get("displayName", "viewer"),
                 "text": text,
             }
         )
-    for candidate in sorted(candidates, key=lambda item: item["published_at"]):
-        claimed = claim_message(candidate)
-        if claimed:
-            return claimed
-    return None
+    return messages
 
 
-def latest_card():
-    card = (state_ref().get() or {}).get("latestCard")
-    if not card:
-        return {
-            "author": "WELCOME",
-            "question": "The chat is quiet.",
-            "answer": "Send a message and the next response will appear here.",
-            "status": "KEEPALIVE",
-        }
-    return {
-        "author": card.get("author", "VIEWER"),
-        "question": card.get("question", ""),
-        "answer": card.get("answer", ""),
-        "status": "LATEST",
-    }
+def skip_existing_chat(chat_id):
+    """Return a page token positioned after the current end of chat."""
+    page_token = None
+    while True:
+        response = chat_messages(chat_id, page_token)
+        page_token = response.get("nextPageToken", page_token)
+        if len(response.get("items", [])) < 200:
+            return page_token, response
 
 
-def send_card(stream, lifecycle, card, stop):
-    state = ScreenState()
-    state.set(**card)
-    process = subprocess.Popen(ffmpeg_command(stream), stdin=subprocess.PIPE)
-    feeder = threading.Thread(
-        target=feed_video, args=(process, state, stop), daemon=True
-    )
-    feeder.start()
-    displayed = False
-    try:
-        deadline = time.time() + 75
-        while time.time() < deadline and not stop.is_set():
-            if process.poll() is not None:
-                raise RuntimeError("FFmpeg stopped before YouTube accepted the feed.")
-            current = get_stream().get("status", {}).get("streamStatus")
-            if current == "active":
-                if lifecycle not in ("live", "liveStarting"):
-                    transition("live")
-                break
-            stop.wait(3)
-        else:
-            if stop.is_set():
-                return False
+def go_live(stop):
+    deadline = time.time() + 75
+    while not stop.is_set():
+        if time.time() > deadline:
             raise RuntimeError("YouTube did not accept ingest within 75 seconds.")
-
-        if lifecycle != "live":
-            live_deadline = time.time() + 60
-            while time.time() < live_deadline and not stop.is_set():
-                current_lifecycle = (
-                    get_broadcast().get("status", {}).get("lifeCycleStatus")
-                )
-                if current_lifecycle == "live":
-                    break
-                if current_lifecycle == "complete":
-                    raise RuntimeError(
-                        "YouTube completed the broadcast during its live transition."
-                    )
-                stop.wait(2)
-            else:
-                if stop.is_set():
-                    return False
-                raise RuntimeError(
-                    "YouTube did not finish the live transition within 60 seconds."
-                )
-
-        hold_seconds = max(8, min(20, int(os.environ.get("CARD_SECONDS", "10"))))
-        displayed = not stop.wait(hold_seconds)
-        return displayed
-    finally:
-        stop.set()
-        feeder.join(timeout=3)
-        if process.poll() is None:
-            process.send_signal(signal.SIGINT)
-            try:
-                process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-
-
-def run_stream_job(stop):
-    job_lock.acquire()
-    if stop.is_set():
-        job_lock.release()
-        return
-    with status_lock:
-        runtime_status.update(
-            {
-                "running": True,
-                "startedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "lastError": None,
-                "processedThisRun": 0,
-            }
-        )
-    try:
-        broadcast = get_broadcast()
-        lifecycle = broadcast.get("status", {}).get("lifeCycleStatus")
+        if get_stream().get("status", {}).get("streamStatus") == "active":
+            break
+        stop.wait(3)
+    deadline = time.time() + 60
+    transitioned = False
+    while not stop.is_set():
+        lifecycle = get_broadcast().get("status", {}).get("lifeCycleStatus")
+        if lifecycle == "live":
+            return
         if lifecycle == "complete":
+            raise RuntimeError("YouTube completed the broadcast.")
+        if time.time() > deadline:
             raise RuntimeError(
-                "Configured broadcast is complete; replace YOUTUBE_BROADCAST_ID."
+                "YouTube did not finish the live transition within 60 seconds."
             )
-        if lifecycle not in ("ready", "testing", "liveStarting", "live"):
-            raise RuntimeError(f"Broadcast is not resumable from state: {lifecycle}")
-        stream = get_stream()
-        if not stream.get("contentDetails", {}).get("isReusable"):
-            raise RuntimeError("Configured YouTube stream is not reusable.")
-        chat_id = broadcast.get("snippet", {}).get("liveChatId")
-        if not chat_id:
-            raise RuntimeError("Broadcast has no live chat ID.")
-        candidate = claim_one_message(chat_id)
-        if stop.is_set():
-            if candidate:
-                finish_claim(candidate, answered=False)
-            return
-        if candidate is None:
-            send_card(stream, lifecycle, latest_card(), stop)
-            return
-        try:
-            answer = exa_answer(candidate["text"], lambda _current: None)
-            if stop.is_set():
-                finish_claim(candidate, answered=False)
-                return
-            answer = answer or "I couldn’t produce an answer for that message."
-            card = {
-                "author": candidate["author"],
-                "question": candidate["text"],
-                "answer": answer,
-                "status": "ANSWERED",
-            }
-            displayed = send_card(stream, lifecycle, card, stop)
-            if displayed:
-                finish_claim(candidate, answered=True, card=card)
-                with status_lock:
-                    runtime_status["processedThisRun"] = 1
-            else:
-                finish_claim(candidate, answered=False)
-        except Exception as exc:
-            finish_claim(candidate, answered=False)
-            raise
-    except Exception as exc:
-        print(f"Stream job failed: {exc}", file=sys.stderr, flush=True)
-        with status_lock:
-            runtime_status["lastError"] = str(exc)
-    finally:
-        stop.set()
-        with status_lock:
-            runtime_status["running"] = False
-            runtime_status["lastFinishedAt"] = dt.datetime.now(
-                dt.timezone.utc
-            ).isoformat()
-        job_lock.release()
-
-
-class Handler(BaseHTTPRequestHandler):
-    def send_json(self, status, payload):
-        body = json.dumps(payload, separators=(",", ":")).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path.split("?", 1)[0] not in ("/", "/health"):
-            self.send_json(404, {"error": "not_found"})
-            return
-        with status_lock:
-            payload = dict(runtime_status)
-        payload["ok"] = True
-        self.send_json(200, payload)
-
-    def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        if parsed.path != "/tick":
-            self.send_json(404, {"error": "not_found"})
-            return
-        expected = required("CRON_SHARED_SECRET")
-        supplied = self.headers.get("Authorization", "")
-        if supplied != "Bearer " + expected:
-            self.send_json(401, {"error": "unauthorized"})
-            return
-        try:
-            delay = int(urllib.parse.parse_qs(parsed.query).get("delay", ["0"])[0])
-        except ValueError:
-            self.send_json(400, {"error": "invalid_delay"})
-            return
-        if delay not in (0, 30):
-            self.send_json(400, {"error": "invalid_delay"})
-            return
-        if delay:
-            threading.Thread(
-                target=self.start_after_delay, args=(delay,), daemon=True
-            ).start()
-            self.send_json(202, {"ok": True, "started": False, "scheduledIn": delay})
-            return
-        replaced = self.start_job()
-        self.send_json(202, {"ok": True, "started": True, "replaced": replaced})
-
-    @staticmethod
-    def start_job():
-        global current_stop
-        with request_lock:
-            replaced = current_stop is not None and not current_stop.is_set()
-            if replaced:
-                current_stop.set()
-            current_stop = threading.Event()
-            threading.Thread(
-                target=run_stream_job, args=(current_stop,), daemon=True
-            ).start()
-        return replaced
-
-    @classmethod
-    def start_after_delay(cls, delay):
-        time.sleep(delay)
-        cls.start_job()
-
-    def log_message(self, fmt, *args):
-        print(f"{self.client_address[0]} {fmt % args}", flush=True)
+        if not transitioned and lifecycle in ("ready", "testing"):
+            transition("live")
+            transitioned = True
+        stop.wait(2)
 
 
 def main():
-    port = int(os.environ.get("PORT", "10000"))
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"Listening on :{port}", flush=True)
-    server.serve_forever()
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    deadline = time.monotonic() + int(os.environ.get("MAX_RUNTIME_SECONDS", "14400"))
+    card_seconds = max(8, min(20, int(os.environ.get("CARD_SECONDS", "10"))))
+    poll_seconds = max(5, int(os.environ.get("CHAT_POLL_SECONDS", "30")))
+
+    broadcast = get_broadcast()
+    lifecycle = broadcast.get("status", {}).get("lifeCycleStatus")
+    if lifecycle not in ("ready", "testing", "liveStarting", "live"):
+        raise RuntimeError(f"Broadcast is not resumable from state: {lifecycle}")
+    stream = get_stream()
+    if not stream.get("contentDetails", {}).get("isReusable"):
+        raise RuntimeError("Configured YouTube stream is not reusable.")
+    chat_id = broadcast.get("snippet", {}).get("liveChatId")
+    if not chat_id:
+        raise RuntimeError("Broadcast has no live chat ID.")
+
+    screen = ScreenState()
+    screen.set(
+        author="WELCOME",
+        question="The chat is quiet.",
+        answer="Send a message and the next response will appear here.",
+        status="LIVE",
+    )
+    page_token, _ = skip_existing_chat(chat_id)
+    encoder = Encoder(stream, screen)
+    pending = deque(maxlen=20)
+    next_poll = 0
+    card_until = 0
+    print("Streaming started", flush=True)
+    try:
+        while not stop.is_set() and time.monotonic() < deadline:
+            try:
+                if not encoder.alive():
+                    encoder.start()
+                    go_live(stop)
+                now = time.monotonic()
+                if now >= next_poll:
+                    response = chat_messages(chat_id, page_token)
+                    page_token = response.get("nextPageToken", page_token)
+                    interval = int(response.get("pollingIntervalMillis", 0)) / 1000
+                    next_poll = now + max(poll_seconds, interval)
+                    pending.extend(new_messages(response))
+                if pending and now >= card_until:
+                    message = pending.popleft()
+                    answer = exa_answer(message["text"], lambda _current: None)
+                    screen.set(
+                        author=message["author"],
+                        question=message["text"],
+                        answer=answer or "I couldn\u2019t produce an answer for that message.",
+                        status="ANSWERED",
+                    )
+                    card_until = time.monotonic() + card_seconds
+            except Exception as exc:
+                print(f"Loop error: {exc}", file=sys.stderr, flush=True)
+                stop.wait(10)
+            stop.wait(1)
+    finally:
+        encoder.close()
 
 
 if __name__ == "__main__":
