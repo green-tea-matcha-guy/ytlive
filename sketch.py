@@ -1,5 +1,6 @@
 """Keyword sketches from the PenGPT drawing model."""
 
+import json
 import os
 import sys
 
@@ -21,13 +22,70 @@ def ensure_models():
     return [fetch(os.path.join(MODEL_DIR, name)) for name in (SKETCH_MODEL, TEXT_MODEL)]
 
 
+class LeanWords:
+    """The SigLIP 2 text tower from siglip-text.npz, held in bfloat16 and filled tensor by tensor.
+
+    pengpt's own Words loads every weight as float32 twice over (about 5 GB at peak), which is more than a
+    4 GB CI machine has; this needs about 1.5 GB and gives the same vectors to within bfloat16 rounding.
+    """
+
+    def __init__(self, path):
+        import tempfile
+
+        import torch
+        from transformers import PreTrainedTokenizerFast, SiglipTextConfig, SiglipTextModel
+
+        z = np.load(path)
+        meta = json.loads(str(z["meta"]))
+        fills = {n: getattr(torch.Tensor, n) for n in ("normal_", "uniform_")}  # skip random init, we overwrite
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(torch.bfloat16)
+        try:
+            for n in fills:
+                setattr(torch.Tensor, n, lambda t, *a, **k: t)
+            self.model = SiglipTextModel(SiglipTextConfig(**meta["config"]))
+        finally:
+            torch.set_default_dtype(previous)
+            for n, f in fills.items():
+                setattr(torch.Tensor, n, f)
+        files = set(z.files)
+        with torch.no_grad():
+            for name, param in self.model.state_dict().items():
+                key = name if name in files else "text_model." + name
+                if key not in files:
+                    raise RuntimeError(f"siglip-text.npz has no weight for {name}")
+                raw = z[key]
+                scale = z[key + ".scale"] if key + ".scale" in files else None
+                step = 2048  # dequantise a slab of rows at a time to keep the transient small
+                if raw.ndim == 0:
+                    raw, scale = raw.reshape(1), None if scale is None else scale.reshape(1)
+                for i in range(0, raw.shape[0], step):
+                    slab = raw[i:i + step].astype(np.float32)
+                    if scale is not None:
+                        slab = slab * scale[i:i + step]
+                    param.reshape(-1, *param.shape[1:])[i:i + step].copy_(torch.from_numpy(slab))
+        self.model.eval()
+        self.remap = torch.from_numpy(z["remap"]).long() if "remap" in files else None
+        with tempfile.TemporaryDirectory() as d:
+            path_json = os.path.join(d, "tokenizer.json")
+            open(path_json, "w", encoding="utf-8").write(meta["tokenizer"])
+            self.tokenizer = PreTrainedTokenizerFast(tokenizer_file=path_json, pad_token="<pad>")
+        self.torch = torch
+
+    def __call__(self, text):
+        ids = self.tokenizer([text.lower()], padding="max_length", truncation=True, max_length=64, return_tensors="pt")["input_ids"]
+        if self.remap is not None:
+            ids = self.remap[ids]
+        with self.torch.inference_mode():
+            out = self.model(input_ids=ids).pooler_output[0].float()
+        return (out / out.norm()).numpy().astype(np.float32)
+
+
 class Sketcher:
     def __init__(self):
-        from words import Words
-
         sketch_path, text_path = ensure_models()
         self.pen = Pen(sketch_path)
-        self.pen.encoder = Words(text_path)
+        self.pen.encoder = LeanWords(text_path)
 
     def draw(self, keyword, seed=0):
         """A list of strokes, each an (n, 2) array scaled so the drawing fits a unit box, y pointing down."""
