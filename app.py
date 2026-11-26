@@ -35,7 +35,7 @@ def ffmpeg_command(output, local=False):
         "-re", "-stream_loop", "-1", "-i", BGM_PATH,
         "-filter_complex", AUDIO_FILTER,
         "-map", "0:v", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "superfast", "-threads", "1",  # one core for x264, one for the drawing process
+        "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1",  # one core for x264, one for the drawing process
          "-profile:v", "high", "-level:v", "4.0",
         "-pix_fmt", "yuv420p", "-r", str(FPS),
         "-b:v", "1500k", "-maxrate", "1800k", "-bufsize", "3600k",

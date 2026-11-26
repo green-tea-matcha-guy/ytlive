@@ -1,8 +1,12 @@
 """Keyword sketches from the PenGPT drawing model."""
 
+import gzip
 import json
 import os
+import random
 import sys
+import threading
+import time
 
 import numpy as np
 
@@ -89,14 +93,69 @@ class LeanWords:
         return (out / out.norm()).numpy().astype(np.float32)
 
 
+LIBRARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sketch_library.json.gz")
+
+
+def load_library(path=LIBRARY_PATH):
+    """Pre-drawn sketches: {word: [drawing, ...]}, each drawing a list of (n, 2) stroke arrays."""
+    if not os.path.exists(path):
+        return {}
+    with gzip.open(path, "rt") as f:
+        raw = json.load(f)
+    return {word: [[np.array(stroke) for stroke in drawing] for drawing in drawings] for word, drawings in raw.items()}
+
+
+def singular_forms(word):
+    yield word
+    if word.endswith("ies"):
+        yield word[:-3] + "y"
+    if word.endswith("es"):
+        yield word[:-2]
+    if word.endswith("s"):
+        yield word[:-1]
+
+
 class Sketcher:
-    def __init__(self):
-        sketch_path, text_path = ensure_models()
-        self.pen = Pen(sketch_path)
-        self.pen.encoder = LeanWords(text_path)
+    """Sketches for keywords: from the pre-drawn library when the word is in it, else drawn live.
+
+    The models load in a background thread, so scenes made only of library words can go out at once.
+    """
+
+    def __init__(self, library=True, preload=True):
+        self.library = load_library() if library else {}
+        self.pen = None
+        self.lock = threading.Lock()
+        if preload:
+            threading.Thread(target=self.load_models, daemon=True).start()
+
+    def load_models(self):
+        with self.lock:
+            if self.pen is not None:
+                return
+            import torch
+
+            torch.set_num_threads(1)
+            started = time.monotonic()
+            sketch_path, text_path = ensure_models()
+            pen = Pen(sketch_path)
+            pen.encoder = LeanWords(text_path)
+            self.pen = pen
+            print(f"sketch models ready after {time.monotonic() - started:.0f}s", flush=True)
+
+    def from_library(self, keyword, seed):
+        word = keyword.lower().strip()
+        for form in singular_forms(word):
+            if form in self.library:
+                drawings = self.library[form]
+                return drawings[random.Random(seed).randrange(len(drawings))]
+        return None
 
     def draw(self, keyword, seed=0):
         """A list of strokes, each an (n, 2) array scaled so the drawing fits a unit box, y pointing down."""
+        cached = self.from_library(keyword, seed)
+        if cached is not None:
+            return cached
+        self.load_models()
         prompt = keyword if keyword.split()[0] in ("a", "an", "the") else f"a {keyword}"
         best = None
         for attempt in range(3):

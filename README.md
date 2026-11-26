@@ -11,9 +11,12 @@ self-restarting CircleCI job.
    drawable keywords per scene. The reply is parsed defensively: any trailing `followups` block or code
    fence is ignored, the scenes must match the original story, and if the LLM fails the story is split
    locally and keywords fall back to heuristics (`llm.py`, covered by `tests/`).
-3. Draws each keyword with the [PenGPT](https://github.com/greydanus/pengpt) drawing model (SigLIP 2 text
-   vector in, pen strokes out; runs on CPU in a few seconds a drawing) and animates the strokes as if
-   being drawn.
+3. Gets each keyword's sketch from a pre-drawn library (`sketch_library.json.gz`, about 560 common nouns, two
+   variants each, built by `scripts/build_library.py`; the LLM is steered towards those words) or, for rarer
+   words, draws it live with the [PenGPT](https://github.com/greydanus/pengpt) drawing model (SigLIP 2 text
+   vector in, pen strokes out; live drawing is slow on a small CI machine, which is why the library exists).
+   The strokes are animated as if being drawn. Drawing settings are the demo's: guidance halfway between
+   loose and literal (2.5), and no ink request (the sparse end).
 4. Renders the sentence on a paper page with the sketches below it, and streams it with a synthesised,
    looping piano track. Scenes are prepared a few ahead while the current one is on screen.
 
