@@ -1,0 +1,3 @@
+pen.py and words.py are copied unmodified from https://github.com/greydanus/pengpt
+(inference/), Copyright Sam Greydanus, licensed under Apache-2.0 (see LICENSE here).
+Model weights are downloaded at run time from that repository's releases.

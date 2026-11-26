@@ -4,9 +4,15 @@ jobs:
   stream:
     docker:
       - image: cimg/python:3.12
-    resource_class: small
+    # frame rendering, drawing inference and x264 need more than one vCPU
+    resource_class: medium
+    environment:
+      PENGPT_MODEL_DIR: /home/circleci/models
     steps:
       - checkout
+      - restore_cache:
+          keys:
+            - models-v1
       - run:
           name: Install ffmpeg and fonts
           command: |
@@ -14,7 +20,21 @@ jobs:
             sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - run:
           name: Install Python dependencies
-          command: pip install --no-cache-dir -r requirements.txt
+          command: |
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+            pip install -r requirements.txt
+      - run:
+          name: Fetch PenGPT models
+          command: python -c "import sketch; print(sketch.ensure_models())"
+      - save_cache:
+          key: models-v1
+          paths:
+            - /home/circleci/models
+      - run:
+          name: Test
+          command: |
+            pip install pytest
+            python -m pytest -q tests
       - run:
           name: Stream
           command: |
@@ -26,8 +46,8 @@ jobs:
           when: always
           command: |
             # Chain runs so the stream continues past the job time limit.
-            # Skip while the placeholder IDs are still in place, or when
-            # RESTART_ENABLED=false (the kill switch for stopping the chain).
+            # Skip while RESTART_ENABLED=false (the kill switch for stopping the chain),
+            # or while the placeholder IDs are still in place.
             if [ "$RESTART_ENABLED" = "false" ]; then
               echo "RESTART_ENABLED=false; not restarting"
               exit 0
