@@ -28,9 +28,8 @@ SANS_CANDIDATES = (
 
 TEXT_BOX = (90, 62, 1190, 300)  # sentence area
 DIVIDER_Y = 322
-SKETCH_TOP, SKETCH_HEIGHT = 345, 285  # sketch layer region
-SKETCH_SIZE = 255
-CAPTION_Y = 640
+SKETCH_TOP, SKETCH_HEIGHT = 345, 320  # sketch layer region
+SKETCH_SIZE = 280
 FADE = 0.5
 DRAW_START = 0.6
 
@@ -158,14 +157,12 @@ class SceneView:
         draw_sentence(draw, text)
         ornament(draw, DIVIDER_Y)
 
-        caption_font = ImageFont.truetype(SANS, 21)
         n = max(len(keywords), 1)
         cell = 1120 / n
         size = min(cell * 0.82, SKETCH_SIZE)
         self.sketches = []
         for k, (word, strokes) in enumerate(zip(keywords, strokes_by_keyword)):
             cx = 80 + cell * (k + 0.5)
-            centred(draw, (cx, CAPTION_Y), word, caption_font, MUTED)
             if strokes:
                 self.sketches.append(Sketch(strokes, cx, size))
 

@@ -84,3 +84,7 @@ def test_plan_scenes_survives_total_llm_failure(monkeypatch):
 def test_drop_names_removes_capitalised_only_words():
     story = "Rita saw a rock. The rock was big. Rita smiled at the bear."
     assert llm.drop_names(["rita", "rock", "bear", "moon"], story) == ["rock", "bear", "moon"]
+
+
+def test_heuristic_keywords_keep_sentence_order():
+    assert llm.heuristic_keywords("The lighthouse stood above the harbour and a rowboat") == ["lighthouse", "harbour", "rowboat"]
